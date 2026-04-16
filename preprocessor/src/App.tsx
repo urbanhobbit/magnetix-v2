@@ -703,7 +703,11 @@ export default function App() {
               // Create session if in create mode
               if (createMode && sessionName.trim()) {
                 const id = `session_${Date.now()}`;
-                await createSession({ id, name: sessionName.trim(), createdBy: userName.trim(), status: 'l1' });
+                try {
+                  await createSession({ id, name: sessionName.trim(), createdBy: userName.trim(), status: 'l1' });
+                } catch (err) {
+                  console.warn('Firestore session create failed, continuing offline:', err);
+                }
                 setSessionId(id);
               }
               setStep('process');

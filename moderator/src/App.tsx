@@ -71,32 +71,57 @@ function computeTreemapLayout(
   containerH: number,
 ): TreemapRect[] {
   if (groups.length === 0 || containerW <= 0 || containerH <= 0) return [];
-  const totalValue = groups.reduce((s, g) => s + g.value, 0);
-  if (totalValue <= 0) return groups.map((g, i) => ({ groupId: g.id, x: i * 120, y: 0, w: 120, h: containerH }));
-
+  const GAP = 6;
   const sorted = [...groups].sort((a, b) => b.value - a.value);
+  const totalValue = sorted.reduce((s, g) => s + g.value, 0);
+  if (totalValue <= 0) return [];
+
+  // Squarified treemap using slice-and-dice with aspect ratio optimization
   const rects: TreemapRect[] = [];
-  let x = 0;
 
-  for (const g of sorted) {
-    const frac = g.value / totalValue;
-    const w = Math.max(frac * containerW, 100);
-    rects.push({ groupId: g.id, x, y: 0, w, h: containerH });
-    x += w;
-  }
+  function layout(items: typeof sorted, x: number, y: number, w: number, h: number) {
+    if (items.length === 0) return;
+    if (items.length === 1) {
+      rects.push({ groupId: items[0].id, x: x + GAP / 2, y: y + GAP / 2, w: Math.max(w - GAP, 40), h: Math.max(h - GAP, 40) });
+      return;
+    }
 
-  // normalize to fit exactly
-  const totalW = rects.reduce((s, r) => s + r.w, 0);
-  if (totalW > 0) {
-    const scale = containerW / totalW;
-    let cx = 0;
-    for (const r of rects) {
-      r.x = cx;
-      r.w = r.w * scale;
-      cx += r.w;
+    const sum = items.reduce((s, g) => s + g.value, 0);
+    const isHorizontal = w >= h;
+
+    // Find best split
+    let partialSum = 0;
+    let bestSplit = 1;
+    let bestAspect = Infinity;
+    for (let i = 0; i < items.length - 1; i++) {
+      partialSum += items[i].value;
+      const frac = partialSum / sum;
+      const dim1 = isHorizontal ? w * frac : h * frac;
+      const dim2 = isHorizontal ? h : w;
+      const aspect = Math.max(dim1 / Math.max(dim2, 1), dim2 / Math.max(dim1, 1));
+      if (aspect < bestAspect) {
+        bestAspect = aspect;
+        bestSplit = i + 1;
+      }
+    }
+
+    const left = items.slice(0, bestSplit);
+    const right = items.slice(bestSplit);
+    const leftSum = left.reduce((s, g) => s + g.value, 0);
+    const frac = leftSum / sum;
+
+    if (isHorizontal) {
+      const splitX = w * frac;
+      layout(left, x, y, splitX, h);
+      layout(right, x + splitX, y, w - splitX, h);
+    } else {
+      const splitY = h * frac;
+      layout(left, x, y, w, splitY);
+      layout(right, x, y + splitY, w, h - splitY);
     }
   }
 
+  layout(sorted, 0, 0, containerW, containerH);
   return rects;
 }
 
@@ -264,6 +289,11 @@ export default function App() {
   useEffect(() => {
     const el = treemapRef.current;
     if (!el) return;
+    // Initial size measurement
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setContainerSize({ w: rect.width, h: rect.height });
+    }
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) {
@@ -325,11 +355,16 @@ export default function App() {
     }
 
     // Mock fallback
-    if (!expertResults) expertResults = MOCK_L2_RESULTS;
+    if (!expertResults) {
+      console.log('[L3] Using MOCK_L2_RESULTS, count:', MOCK_L2_RESULTS.length);
+      expertResults = MOCK_L2_RESULTS;
+    }
+    console.log('[L3] expertResults count:', expertResults.length);
 
     await new Promise((r) => setTimeout(r, 1200));
 
     const { mergedNeeds, mergedGroups } = computeConsensus(expertResults);
+    console.log('[L3] consensus result:', mergedNeeds.length, 'needs,', mergedGroups.length, 'groups');
     setNeeds(mergedNeeds);
     setGroups(mergedGroups);
     setView('main');
@@ -342,11 +377,13 @@ export default function App() {
   // ─── Treemap data ─────────────────────────────────────────────────────────
 
   const groupValues = useMemo(() => {
-    return groups.map((g) => {
-      const gNeeds = needs.filter((n) => n.groupId === g.id && n.stage === 'selected');
-      const value = gNeeds.reduce((s, n) => s + (n.consensus ?? 0), 0);
-      return { id: g.id, value: Math.max(value, 0.1) };
-    });
+    return groups
+      .filter((g) => g.stage === 'selected')
+      .map((g) => {
+        const gNeeds = needs.filter((n) => n.groupId === g.id && n.stage === 'selected');
+        const value = gNeeds.reduce((s, n) => s + (n.consensus ?? 0), 0);
+        return { id: g.id, value: Math.max(value, 0.15), needCount: gNeeds.length };
+      });
   }, [groups, needs]);
 
   const treemapRects = useMemo(

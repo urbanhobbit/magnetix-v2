@@ -79,7 +79,7 @@ export function computeConsensus(expertResults: ExpertResult[]): { mergedNeeds: 
       if (groupCounts[gn] > bestCount) { bestCount = groupCounts[gn]; bestGroup = gn; }
     }
     const consensus = bestGroup ? Math.round((bestCount / totalExperts) * 100) / 100 : 0;
-    const isConsensus = consensus >= 0.7;
+    const isConsensus = consensus >= 0.25;
     mergedNeeds.push({
       id: `mn_${nIdx}`,
       text: entry.text,
@@ -91,7 +91,11 @@ export function computeConsensus(expertResults: ExpertResult[]): { mergedNeeds: 
     nIdx++;
   }
 
-  return { mergedNeeds, mergedGroups };
+  // Filter out groups that have no needs assigned
+  const usedGroupIds = new Set(mergedNeeds.filter(n => n.groupId).map(n => n.groupId));
+  const finalGroups = mergedGroups.filter(g => usedGroupIds.has(g.id));
+
+  return { mergedNeeds, mergedGroups: finalGroups };
 }
 
 // ─── L1 Parse + Dedup ────────────────────────────────────────────────────────
