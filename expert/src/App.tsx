@@ -13,11 +13,11 @@ import {
 } from '@dnd-kit/core';
 import {
   Plus, Trash2, Pencil, Check, X, Send, User, LogOut,
-  Loader2, StickyNote, ArrowRight, FolderPlus, GripVertical,
+  Loader2, StickyNote, FolderPlus, GripVertical, Upload,
 } from 'lucide-react';
-import type { Need, Group, L1Note } from '@shared/types';
-import { parseL1Notes } from '@shared/types';
+import type { Need, Group } from '@shared/types';
 import { MOCK_L1_NOTES, MOCK_L2_RESULTS } from '@shared/mockData';
+import { saveL1Note, getPreprocessed, saveL2Result, listSessions, type Session } from '@shared/firestoreService';
 import { cn } from './lib/utils';
 
 const IS_MOCK = import.meta.env.VITE_MOCK === 'true';
@@ -168,7 +168,13 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [expertName, setExpertName] = useState('');
   const [nameInput, setNameInput] = useState('');
-  const [currentLevel, setCurrentLevel] = useState<'L1' | 'L2'>('L1');
+  const [appMode, setAppMode] = useState<'L1' | 'L2'>('L1');
+
+  // Session
+  const [sessionId, setSessionId] = useState('');
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [firestoreError, setFirestoreError] = useState<string | null>(null);
 
   // L1
   const [notes, setNotes] = useState<{ id: string; text: string }[]>([]);
@@ -180,12 +186,21 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
 
   // UI
-  const [loadingNotes, setLoadingNotes] = useState(false);
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  // ─── Load sessions on mount ─────────────────────────────────────────────────
+
+  useEffect(() => {
+    setSessionsLoading(true);
+    listSessions()
+      .then(s => { setSessions(s); if (s.length > 0) setSessionId(s[0].id); })
+      .catch(() => setFirestoreError('Oturum listesi yüklenemedi (offline?)'))
+      .finally(() => setSessionsLoading(false));
+  }, []);
 
   // ─── Login ───────────────────────────────────────────────────────────────────
 
@@ -194,22 +209,102 @@ export default function App() {
     if (!name) return;
     setExpertName(name);
     setLoggedIn(true);
-    // Load mock L1 notes for this expert
-    if (IS_MOCK) {
-      const mockNotes = MOCK_L1_NOTES.filter((n) => n.expertName === name);
-      setNotes(mockNotes.map((n) => ({ id: n.id, text: n.text })));
+
+    if (appMode === 'L1') {
+      // Load mock L1 notes for this expert
+      if (IS_MOCK) {
+        const mockNotes = MOCK_L1_NOTES.filter((n) => n.expertName === name);
+        setNotes(mockNotes.map((n) => ({ id: n.id, text: n.text })));
+      }
+    } else {
+      // L2 mode: load preprocessor data
+      loadL2Data();
     }
-  }, [nameInput]);
+  }, [nameInput, appMode]);
+
+  const loadL2Data = useCallback(async () => {
+    // Try Firestore first
+    if (sessionId) {
+      try {
+        const data = await getPreprocessed(sessionId);
+        if (data) {
+          const importedNeeds: Need[] = [];
+          const importedGroups: Group[] = [];
+          if (Array.isArray(data.groups)) {
+            for (const g of data.groups) {
+              const gId = uid('grp');
+              importedGroups.push({ id: gId, name: g.name, stage: 'selected' });
+              if (Array.isArray(g.needs)) {
+                for (const n of g.needs) {
+                  importedNeeds.push({ id: uid('need'), text: n.text, stage: 'pool' as const, groupId: undefined });
+                }
+              }
+            }
+          }
+          if (Array.isArray(data.unassigned)) {
+            for (const n of data.unassigned) {
+              importedNeeds.push({ id: uid('need'), text: n.text, stage: 'pool' as const, groupId: undefined });
+            }
+          }
+          if (importedNeeds.length > 0) {
+            setGroups(importedGroups);
+            setNeeds(importedNeeds);
+            return;
+          }
+        }
+      } catch (e) { console.error('Firestore T2 load error', e); }
+    }
+
+    // Fallback: localStorage
+    const preprocessed = localStorage.getItem('magnetix_preprocessed');
+    if (preprocessed) {
+      try {
+        const data = JSON.parse(preprocessed);
+        const importedNeeds: Need[] = [];
+        const importedGroups: Group[] = [];
+        if (Array.isArray(data.groups)) {
+          for (const g of data.groups) {
+            const gId = uid('grp');
+            importedGroups.push({ id: gId, name: g.name, stage: 'selected' });
+            if (Array.isArray(g.needs)) {
+              for (const n of g.needs) {
+                importedNeeds.push({ id: uid('need'), text: n.text, stage: 'pool' as const, groupId: undefined });
+              }
+            }
+          }
+        }
+        if (Array.isArray(data.unassigned)) {
+          for (const n of data.unassigned) {
+            importedNeeds.push({ id: uid('need'), text: n.text, stage: 'pool' as const, groupId: undefined });
+          }
+        }
+        if (importedNeeds.length > 0) {
+          setGroups(importedGroups);
+          setNeeds(importedNeeds);
+          return;
+        }
+      } catch { /* fallback */ }
+    }
+    // Mock fallback
+    if (IS_MOCK) {
+      const mockResult = MOCK_L2_RESULTS.find((r) => r.expertName === expertName || true);
+      if (mockResult) {
+        setGroups(mockResult.groups.map((g) => ({ id: g.id, name: g.name, stage: g.stage as 'pool' | 'selected' })));
+        setNeeds(mockResult.needs.map((n) => ({ id: n.id, text: n.text, stage: n.stage as 'pool' | 'selected', groupId: n.groupId })));
+      }
+    }
+  }, [expertName, sessionId]);
 
   const handleLogout = useCallback(() => {
     setLoggedIn(false);
     setExpertName('');
     setNameInput('');
-    setCurrentLevel('L1');
+    setAppMode('L1');
     setNotes([]);
     setNeeds([]);
     setGroups([]);
     setDone(false);
+    setFirestoreError(null);
   }, []);
 
   // ─── L1 ──────────────────────────────────────────────────────────────────────
@@ -232,53 +327,32 @@ export default function App() {
 
   const submitL1 = useCallback(async () => {
     if (notes.length === 0) return;
-    setLoadingNotes(true);
+    setSending(true);
 
-    // Save L1 notes
-    if (!IS_MOCK && API_URL) {
+    const fullText = notes.map(n => n.text).join('\n');
+
+    // Save to Firestore
+    if (sessionId) {
       try {
-        await fetch(API_URL, {
-          method: 'POST', mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'saveL1Notes', expertName, notes: notes.map((n) => n.text) }),
-        });
-      } catch (e) { console.error('L1 save error', e); }
-    } else {
-      console.log('[MOCK] saveL1Notes', { expertName, notes });
+        await saveL1Note(sessionId, expertName, fullText);
+      } catch (e) { console.error('Firestore L1 save error', e); }
     }
 
-    // Parse notes into needs for L2
-    const l1Notes: L1Note[] = notes.map((n, i) => ({
-      id: `parsed_${i}`, expertName, text: n.text, timestamp: new Date().toISOString(),
-    }));
-    const parsed = parseL1Notes(l1Notes);
-    const poolNeeds: Need[] = parsed.map((p, i) => ({
-      id: uid('need'), text: p.text, stage: 'pool' as const, groupId: undefined,
-    }));
+    // Save L1 notes to localStorage for Preprocessor (fallback)
+    const l1Data = {
+      expertName,
+      timestamp: new Date().toISOString(),
+      text: fullText,
+    };
+    const existingL1 = JSON.parse(localStorage.getItem('magnetix_l1_notes') || '[]');
+    const filtered = existingL1.filter((n: any) => n.expertName !== expertName);
+    filtered.push(l1Data);
+    localStorage.setItem('magnetix_l1_notes', JSON.stringify(filtered));
 
-    // If mock, also load pre-populated L2 data
-    if (IS_MOCK) {
-      const mockResult = MOCK_L2_RESULTS.find((r) => r.expertName === expertName);
-      if (mockResult) {
-        const mockGroups: Group[] = mockResult.groups.map((g) => ({ id: g.id, name: g.name, stage: g.stage as 'pool' | 'selected' }));
-        const mockNeeds: Need[] = mockResult.needs.map((n) => ({
-          id: n.id, text: n.text, stage: n.stage as 'pool' | 'selected', groupId: n.groupId,
-        }));
-        setGroups(mockGroups);
-        setNeeds(mockNeeds);
-      } else {
-        setNeeds(poolNeeds);
-        setGroups([]);
-      }
-    } else {
-      setNeeds(poolNeeds);
-      setGroups([]);
-    }
-
-    await new Promise((r) => setTimeout(r, 1200));
-    setLoadingNotes(false);
-    setCurrentLevel('L2');
-  }, [notes, expertName]);
+    await new Promise((r) => setTimeout(r, 800));
+    setSending(false);
+    setDone(true);
+  }, [notes, expertName, sessionId]);
 
   // ─── L2 ──────────────────────────────────────────────────────────────────────
 
@@ -333,21 +407,98 @@ export default function App() {
 
   const submitL2 = useCallback(async () => {
     setSending(true);
-    if (!IS_MOCK && API_URL) {
+
+    const l2Result = {
+      expertName,
+      timestamp: new Date().toISOString(),
+      needs: needs.map(n => ({ id: n.id, text: n.text, stage: n.stage, groupId: n.groupId })),
+      groups: groups.map(g => ({ id: g.id, name: g.name, stage: g.stage })),
+    };
+
+    // Save to Firestore
+    if (sessionId) {
       try {
-        await fetch(API_URL, {
-          method: 'POST', mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'saveL2Board', expertName, needs, groups }),
-        });
-      } catch (e) { console.error('L2 save error', e); }
-    } else {
-      console.log('[MOCK] saveL2Board', { expertName, needs, groups });
+        await saveL2Result(sessionId, expertName, l2Result);
+      } catch (e) { console.error('Firestore L2 save error', e); }
     }
-    await new Promise((r) => setTimeout(r, 1000));
+
+    // localStorage fallback
+    localStorage.setItem(`magnetix_l2_${expertName}`, JSON.stringify(l2Result));
+    const existingList = JSON.parse(localStorage.getItem('magnetix_l2_experts') || '[]') as string[];
+    if (!existingList.includes(expertName)) {
+      existingList.push(expertName);
+      localStorage.setItem('magnetix_l2_experts', JSON.stringify(existingList));
+    }
+
+    // Download JSON
+    const blob = new Blob([JSON.stringify(l2Result, null, 2)], { type: 'application/json' });
+    const dlUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.download = `l2-${expertName.replace(/\s+/g, '_')}-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(dlUrl);
+
+    await new Promise((r) => setTimeout(r, 800));
     setSending(false);
     setDone(true);
-  }, [expertName, needs, groups]);
+  }, [expertName, needs, groups, sessionId]);
+
+  // ─── Import preprocessor JSON ──────────────────────────────────────────────
+
+  const importFileRef = useRef<HTMLInputElement>(null);
+
+  const handleImportPreprocessed = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string);
+        const importedNeeds: Need[] = [];
+        const importedGroups: Group[] = [];
+
+        // Create groups from preprocessor output
+        if (Array.isArray(data.groups)) {
+          for (const g of data.groups) {
+            const gId = uid('grp');
+            importedGroups.push({ id: gId, name: g.name, stage: 'selected' });
+            if (Array.isArray(g.needs)) {
+              for (const n of g.needs) {
+                importedNeeds.push({
+                  id: uid('need'),
+                  text: n.text,
+                  stage: 'pool' as const,
+                  groupId: undefined,
+                });
+              }
+            }
+          }
+        }
+
+        // Add unassigned needs
+        if (Array.isArray(data.unassigned)) {
+          for (const n of data.unassigned) {
+            importedNeeds.push({
+              id: uid('need'),
+              text: n.text,
+              stage: 'pool' as const,
+              groupId: undefined,
+            });
+          }
+        }
+
+        setGroups(importedGroups);
+        setNeeds(importedNeeds);
+      } catch (err) {
+        console.error('JSON parse error:', err);
+        alert('Gecersiz JSON dosyasi');
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so same file can be re-imported
+    e.target.value = '';
+  }, []);
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -378,6 +529,61 @@ export default function App() {
                 />
               </div>
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">Oturum</label>
+              {sessionsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
+                  <Loader2 size={14} className="animate-spin" /> Oturumlar yükleniyor...
+                </div>
+              ) : sessions.length > 0 ? (
+                <select
+                  value={sessionId}
+                  onChange={(e) => setSessionId(e.target.value)}
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                >
+                  {sessions.map(s => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.status})</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+                  {firestoreError || 'Henüz oturum yok. Moderatör oturum başlatmalı.'}
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-600 mb-1.5">Mod Seçimi</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAppMode('L1')}
+                  className={cn(
+                    'flex flex-col items-center gap-1 rounded-xl border-2 px-3 py-3 text-sm font-semibold transition-all',
+                    appMode === 'L1'
+                      ? 'border-amber-400 bg-amber-50 text-amber-800 ring-2 ring-amber-200'
+                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300',
+                  )}
+                >
+                  <StickyNote size={20} />
+                  <span>L1 — Not Yaz</span>
+                  <span className="text-xs font-normal text-gray-400">İhtiyaç notları gir</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAppMode('L2')}
+                  className={cn(
+                    'flex flex-col items-center gap-1 rounded-xl border-2 px-3 py-3 text-sm font-semibold transition-all',
+                    appMode === 'L2'
+                      ? 'border-emerald-400 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-200'
+                      : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300',
+                  )}
+                >
+                  <FolderPlus size={20} />
+                  <span>L2 — Tasnif</span>
+                  <span className="text-xs font-normal text-gray-400">Kartları grupla</span>
+                </button>
+              </div>
+            </div>
             <button
               type="submit" disabled={!nameInput.trim()}
               className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#7a5020] to-[#a0703c] text-white font-semibold text-sm shadow-md hover:shadow-lg disabled:opacity-40 transition-all"
@@ -386,18 +592,6 @@ export default function App() {
             </button>
           </form>
         </motion.div>
-      </div>
-    );
-  }
-
-  // Loading between L1→L2
-  if (loadingNotes) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-yellow-50 flex flex-col items-center justify-center gap-4">
-        <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.2, ease: 'linear' }}>
-          <Loader2 size={40} className="text-[#7a5020]" />
-        </motion.div>
-        <p className="text-lg font-semibold text-[#7a5020]">Notlar Sentezleniyor...</p>
       </div>
     );
   }
@@ -438,9 +632,9 @@ export default function App() {
       <h1 className="text-xl font-extrabold text-[#7a5020] tracking-tight">MagnetiX</h1>
       <span className={cn(
         'text-xs font-bold px-2 py-0.5 rounded-full',
-        currentLevel === 'L1' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700',
+        appMode === 'L1' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700',
       )}>
-        {currentLevel}
+        {appMode}
       </span>
       <div className="flex-1" />
       <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -455,7 +649,7 @@ export default function App() {
 
   // ─── L1 Screen ─────────────────────────────────────────────────────────────
 
-  if (currentLevel === 'L1') {
+  if (appMode === 'L1') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-yellow-50 font-sans">
         {header}
@@ -501,7 +695,7 @@ export default function App() {
                 onClick={submitL1} disabled={notes.length === 0}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#7a5020] to-[#a0703c] text-white font-semibold text-sm hover:shadow-lg disabled:opacity-40 shadow-md transition-all"
               >
-                Gönder ve Devam Et <ArrowRight size={16} />
+                Gönder <Send size={16} />
               </button>
             </div>
           </main>
@@ -523,6 +717,15 @@ export default function App() {
               <StickyNote size={16} className="text-amber-600" />
               <h2 className="text-sm font-bold text-gray-700">Havuz</h2>
               <span className="ml-auto text-xs bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">{poolNeeds.length}</span>
+            </div>
+            <div className="px-3 py-2 border-b border-amber-100">
+              <input ref={importFileRef} type="file" accept=".json" onChange={handleImportPreprocessed} className="hidden" />
+              <button
+                onClick={() => importFileRef.current?.click()}
+                className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition"
+              >
+                <Upload size={12} /> Preprocessor JSON Yukle
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1.5">
               {poolNeeds.map((n) => (

@@ -22,11 +22,13 @@ import {
   X,
   Plus,
   Trash2,
+  Upload,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import type { Need, Group, ExpertResult } from '@shared/types';
 import { computeConsensus } from '@shared/types';
 import { MOCK_L2_RESULTS } from '@shared/mockData';
+import { getL2Results, listSessions, type Session } from '@shared/firestoreService';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -227,6 +229,11 @@ export default function App() {
   const [moderatorName, setModeratorName] = useState('');
   const [nameInput, setNameInput] = useState('');
 
+  // Session
+  const [sessionId, setSessionId] = useState('');
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+
   // Data
   const [needs, setNeeds] = useState<Need[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -242,6 +249,15 @@ export default function App() {
   // ─── Sensors ───────────────────────────────────────────────────────────────
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  // Load sessions on mount
+  useEffect(() => {
+    setSessionsLoading(true);
+    listSessions()
+      .then(s => { setSessions(s); if (s.length > 0) setSessionId(s[0].id); })
+      .catch(() => {})
+      .finally(() => setSessionsLoading(false));
+  }, []);
 
   // ─── Resize observer ──────────────────────────────────────────────────────
 
@@ -272,26 +288,52 @@ export default function App() {
   const loadData = useCallback(async () => {
     let expertResults: ExpertResult[] | null = null;
 
-    try {
-      const resp = await fetch(`${API_URL}?action=getL2Results`);
-      if (resp.ok) {
-        const json = await resp.json();
-        if (Array.isArray(json) && json.length > 0) expertResults = json;
-      }
-    } catch {
-      // fallback to mock
+    // First try Firestore
+    if (sessionId) {
+      try {
+        const firestoreResults = await getL2Results(sessionId);
+        if (firestoreResults.length > 0) {
+          expertResults = firestoreResults.map(r => ({
+            expertName: r.expertName,
+            needs: r.needs,
+            groups: r.groups,
+          }));
+        }
+      } catch (e) { console.error('Firestore L2 read error', e); }
     }
 
+    // Fallback: localStorage
+    if (!expertResults) {
+      try {
+        const expertList = JSON.parse(localStorage.getItem('magnetix_l2_experts') || '[]') as string[];
+        if (expertList.length > 0) {
+          const results: ExpertResult[] = [];
+          for (const name of expertList) {
+            const raw = localStorage.getItem(`magnetix_l2_${name}`);
+            if (raw) {
+              const data = JSON.parse(raw);
+              results.push({
+                expertName: data.expertName,
+                needs: data.needs,
+                groups: data.groups,
+              });
+            }
+          }
+          if (results.length > 0) expertResults = results;
+        }
+      } catch { /* fallback */ }
+    }
+
+    // Mock fallback
     if (!expertResults) expertResults = MOCK_L2_RESULTS;
 
-    // Simulate computation delay
-    await new Promise((r) => setTimeout(r, 1800));
+    await new Promise((r) => setTimeout(r, 1200));
 
     const { mergedNeeds, mergedGroups } = computeConsensus(expertResults);
     setNeeds(mergedNeeds);
     setGroups(mergedGroups);
     setView('main');
-  }, []);
+  }, [sessionId]);
 
   // ─── Pool needs ────────────────────────────────────────────────────────────
 
@@ -400,6 +442,48 @@ export default function App() {
     setGroups([]);
   };
 
+  // ─── Import L2 JSON files ──────────────────────────────────────────────────
+
+  const importL2Ref = useRef<HTMLInputElement>(null);
+  const [importedExperts, setImportedExperts] = useState<string[]>([]);
+
+  const handleImportL2 = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const readers: Promise<ExpertResult>[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      readers.push(new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const data = JSON.parse(reader.result as string);
+            resolve({
+              expertName: data.expertName || `Uzman ${i + 1}`,
+              needs: data.needs || [],
+              groups: data.groups || [],
+            });
+          } catch (err) { reject(err); }
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(file);
+      }));
+    }
+
+    Promise.all(readers).then((results) => {
+      const { mergedNeeds, mergedGroups } = computeConsensus(results);
+      setNeeds(mergedNeeds);
+      setGroups(mergedGroups);
+      setImportedExperts(results.map(r => r.expertName));
+    }).catch((err) => {
+      console.error('L2 JSON import error:', err);
+      alert('JSON dosyalari okunamadi');
+    });
+
+    e.target.value = '';
+  }, []);
+
   // ═══════════════════════════════════════════════════════════════════════════
   // LOGIN VIEW
   // ═══════════════════════════════════════════════════════════════════════════
@@ -434,6 +518,27 @@ export default function App() {
                 placeholder="Moderatör adı..."
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/40 text-sm outline-none focus:border-[#2060b0] focus:ring-2 focus:ring-[#2060b0]/30 transition-all"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-purple-200 mb-1.5">Oturum</label>
+              {sessionsLoading ? (
+                <p className="text-xs text-purple-300/60 py-2">Yükleniyor...</p>
+              ) : sessions.length > 0 ? (
+                <select
+                  value={sessionId}
+                  onChange={(e) => setSessionId(e.target.value)}
+                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-[#2060b0] focus:ring-2 focus:ring-[#2060b0]/30"
+                >
+                  {sessions.map(s => (
+                    <option key={s.id} value={s.id} className="text-gray-900">{s.name} ({s.status})</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-xs text-amber-300 bg-amber-500/10 rounded-lg px-3 py-2">
+                  Henüz oturum yok. Preprocessor'dan oturum başlatılmalı.
+                </p>
+              )}
             </div>
 
             <div>
@@ -504,6 +609,18 @@ export default function App() {
           </div>
 
           <div className="flex-1" />
+
+          <input ref={importL2Ref} type="file" accept=".json" multiple onChange={handleImportL2} className="hidden" />
+          <button
+            onClick={() => importL2Ref.current?.click()}
+            className="flex items-center gap-1.5 border border-dashed border-purple-300 bg-purple-50 text-purple-700 text-xs font-bold rounded-lg px-3 py-1.5 hover:bg-purple-100 transition-all"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            L2 Yukle
+            {importedExperts.length > 0 && (
+              <span className="bg-purple-200 text-purple-800 rounded-full px-1.5 py-0.5 text-[10px] font-bold">{importedExperts.length}</span>
+            )}
+          </button>
 
           <button
             onClick={handleNewGroup}

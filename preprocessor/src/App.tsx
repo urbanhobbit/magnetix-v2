@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
@@ -27,6 +27,8 @@ import {
   ChevronRight,
   Plus,
   Download,
+  Merge,
+  FolderPlus,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { MOCK_L1_NOTES } from '@shared/mockData';
@@ -39,6 +41,14 @@ import {
   type PreprocessedGroup,
   type PreprocessResult,
 } from '@shared/categorize';
+import {
+  getL1Notes,
+  savePreprocessed,
+  listSessions,
+  createSession,
+  updateSessionStatus,
+  type Session,
+} from '@shared/firestoreService';
 
 // ─── Color palette for groups ────────────────────────────────────────────────
 
@@ -60,15 +70,15 @@ function SortableNeedCard({
   color,
   onEdit,
   onDelete,
-  onMerge,
-  showMerge,
+  selected,
+  onSelect,
 }: {
   need: ParsedNeed;
   color?: typeof GROUP_COLORS[0];
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
-  onMerge?: (id: string) => void;
-  showMerge?: boolean;
+  selected?: boolean;
+  onSelect?: (id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: need.id });
   const [editing, setEditing] = useState(false);
@@ -84,19 +94,31 @@ function SortableNeedCard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: isDragging ? 0.5 : 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.9 }}
+      onClick={() => onSelect?.(need.id)}
       className={cn(
-        'group flex items-start gap-2 rounded-lg border p-2.5 text-sm transition-shadow',
+        'group flex items-start gap-2 rounded-lg border p-2.5 text-sm transition-shadow cursor-pointer',
         color ? `${color.bg} ${color.border}` : 'bg-white border-gray-200',
         isDragging && 'shadow-lg ring-2 ring-blue-300',
+        selected && 'ring-2 ring-purple-500 border-purple-400 bg-purple-50/50',
       )}
     >
-      <button {...attributes} {...listeners} className="mt-0.5 cursor-grab text-gray-400 hover:text-gray-600 shrink-0">
+      <button {...attributes} {...listeners} className="mt-0.5 cursor-grab text-gray-400 hover:text-gray-600 shrink-0" onClick={e => e.stopPropagation()}>
         <GripVertical size={14} />
       </button>
 
+      {/* Selection checkbox */}
+      <div className="mt-0.5 shrink-0">
+        <div className={cn(
+          'h-4 w-4 rounded border-2 flex items-center justify-center transition-colors',
+          selected ? 'border-purple-500 bg-purple-500' : 'border-gray-300 bg-white',
+        )}>
+          {selected && <Check size={10} className="text-white" />}
+        </div>
+      </div>
+
       <div className="flex-1 min-w-0">
         {editing ? (
-          <div className="flex gap-1">
+          <div className="flex gap-1" onClick={e => e.stopPropagation()}>
             <input
               className="flex-1 rounded border border-gray-300 px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
               value={editText}
@@ -110,10 +132,7 @@ function SortableNeedCard({
         ) : (
           <div className="flex items-start justify-between gap-1">
             <span className="leading-snug">{need.text}</span>
-            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-              {showMerge && onMerge && (
-                <button onClick={() => onMerge(need.id)} title="Birleştir" className="p-0.5 text-purple-400 hover:text-purple-600"><Plus size={12} /></button>
-              )}
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={e => e.stopPropagation()}>
               <button onClick={() => { setEditText(need.text); setEditing(true); }} className="p-0.5 text-gray-400 hover:text-gray-600"><Pencil size={12} /></button>
               <button onClick={() => onDelete(need.id)} className="p-0.5 text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
             </div>
@@ -141,6 +160,8 @@ function GroupPanel({
   onDeleteGroup,
   collapsed,
   onToggle,
+  selectedIds,
+  onSelectNeed,
 }: {
   group: PreprocessedGroup;
   colorIdx: number;
@@ -150,6 +171,8 @@ function GroupPanel({
   onDeleteGroup: (id: string) => void;
   collapsed: boolean;
   onToggle: () => void;
+  selectedIds: Set<string>;
+  onSelectNeed: (id: string) => void;
 }) {
   const color = GROUP_COLORS[colorIdx % GROUP_COLORS.length];
   const [renaming, setRenaming] = useState(false);
@@ -201,6 +224,8 @@ function GroupPanel({
                     color={color}
                     onEdit={onEditNeed}
                     onDelete={onDeleteNeed}
+                    selected={selectedIds.has(need.id)}
+                    onSelect={onSelectNeed}
                   />
                 ))}
               </div>
@@ -224,6 +249,22 @@ export default function App() {
   const [step, setStep] = useState<Step>('login');
   const [userName, setUserName] = useState('');
 
+  // Session
+  const [sessionId, setSessionId] = useState('');
+  const [sessionName, setSessionName] = useState('');
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [createMode, setCreateMode] = useState(false);
+
+  // Load sessions on mount
+  useEffect(() => {
+    setSessionsLoading(true);
+    listSessions()
+      .then(s => { setSessions(s); if (s.length > 0) { setSessionId(s[0].id); } else { setCreateMode(true); } })
+      .catch(() => { setCreateMode(true); })
+      .finally(() => setSessionsLoading(false));
+  }, []);
+
   // Processing state
   const [loading, setLoading] = useState(false);
   const [llmLoading, setLlmLoading] = useState(false);
@@ -235,45 +276,145 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  // Multi-select & Merge
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const [mergeText, setMergeText] = useState('');
+  const [mergePickedId, setMergePickedId] = useState<string | null>(null);
+
+  // New category
+  const [showNewCategory, setShowNewCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectedNeeds = useMemo(() => {
+    if (!result) return [];
+    const all = [...result.groups.flatMap(g => g.needs), ...result.unassigned];
+    return all.filter(n => selectedIds.has(n.id));
+  }, [result, selectedIds]);
+
+  // ── L1 notes source ────────────────────────────────────────────────
+
+  const [l1Source, setL1Source] = useState<'mock' | 'localStorage' | 'file' | null>(null);
+  const [importedL1Notes, setImportedL1Notes] = useState<L1Note[] | null>(null);
+  const l1FileRef = useCallback((node: HTMLInputElement | null) => { if (node) node.value = ''; }, []);
+
+  // Check localStorage for L1 notes on mount
+  const localL1Notes = useMemo<L1Note[]>(() => {
+    try {
+      const raw = localStorage.getItem('magnetix_l1_notes');
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length === 0) return [];
+      return parsed.map((n: any) => ({
+        id: n.id || `l1-${Date.now()}-${Math.random()}`,
+        expertName: n.expertName || 'Bilinmeyen',
+        text: n.text || '',
+        timestamp: n.timestamp || '',
+      }));
+    } catch { return []; }
+  }, []);
+
+  const handleL1FileImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string);
+        // Support both array format and single-object format
+        const arr = Array.isArray(data) ? data : [data];
+        const notes: L1Note[] = arr.map((n: any, i: number) => ({
+          id: n.id || `imported-${i}`,
+          expertName: n.expertName || 'Bilinmeyen',
+          text: n.text || (Array.isArray(n.notes) ? n.notes.join('\n') : ''),
+          timestamp: n.timestamp || '',
+        }));
+        setImportedL1Notes(notes);
+        setL1Source('file');
+      } catch (err) {
+        alert('Gecersiz JSON dosyasi');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }, []);
+
   // ── Step 1: Parse + Dedup ──────────────────────────────────────────
 
-  const handleProcess = useCallback(async () => {
+  const handleProcess = useCallback(async (source: 'mock' | 'localStorage' | 'file' | 'firestore') => {
     setLoading(true);
     let notes: L1Note[];
-    if (isMock) {
-      notes = MOCK_L1_NOTES;
-    } else {
+
+    if (source === 'firestore' && sessionId) {
       try {
-        const url = import.meta.env.VITE_APPS_SCRIPT_URL;
-        const res = await fetch(`${url}?action=getL1Notes`);
-        notes = await res.json();
-      } catch {
-        notes = MOCK_L1_NOTES;
+        const firestoreNotes = await getL1Notes(sessionId);
+        notes = firestoreNotes.map((n, i) => ({
+          id: `fs-${i}`,
+          expertName: n.expertName,
+          text: n.text,
+          timestamp: n.timestamp,
+        }));
+        if (notes.length === 0) {
+          alert('Firestore\'da bu oturum icin L1 notu bulunamadi.');
+          setLoading(false);
+          return;
+        }
+      } catch (e) {
+        console.error('Firestore L1 read error', e);
+        alert('Firestore\'dan okunamadi. Baska kaynak deneyin.');
+        setLoading(false);
+        return;
       }
+    } else if (source === 'file' && importedL1Notes) {
+      notes = importedL1Notes;
+    } else if (source === 'localStorage' && localL1Notes.length > 0) {
+      notes = localL1Notes;
+    } else {
+      notes = MOCK_L1_NOTES;
     }
 
     const parsed = parseAndDedup(notes);
     setParsedNeeds(parsed);
 
-    // Kural tabanlı kategorize
     const res = categorizeAllByRules(parsed);
     setResult(res);
     setLoading(false);
     setStep('review');
-  }, [isMock]);
+  }, [importedL1Notes, localL1Notes, sessionId]);
 
   // ── LLM Re-categorize ─────────────────────────────────────────────
 
+  const [llmError, setLlmError] = useState<string | null>(null);
+
   const handleLLMCategorize = useCallback(async () => {
-    if (!geminiKey || !parsedNeeds.length) return;
+    if (!geminiKey || !result) return;
     setLlmLoading(true);
-    // Reset assignments
-    const freshNeeds = parsedNeeds.map(n => ({ ...n, assignedGroup: undefined }));
-    const res = await categorizeWithLLM(freshNeeds, geminiKey);
-    setResult(res);
-    setParsedNeeds(freshNeeds);
-    setLlmLoading(false);
-  }, [geminiKey, parsedNeeds]);
+    setLlmError(null);
+    try {
+      // Gather all current needs from result (groups + unassigned)
+      const allNeeds = [
+        ...result.groups.flatMap(g => g.needs),
+        ...result.unassigned,
+      ].map(n => ({ ...n, assignedGroup: undefined }));
+
+      const res = await categorizeWithLLM(allNeeds, geminiKey);
+      setResult(res);
+      setParsedNeeds(allNeeds);
+    } catch (err: any) {
+      console.error('LLM error:', err);
+      setLlmError(err?.message || 'LLM kategorize basarisiz');
+    } finally {
+      setLlmLoading(false);
+    }
+  }, [geminiKey, result]);
 
   // ── Edit / Delete operations ───────────────────────────────────────
 
@@ -316,6 +457,85 @@ export default function App() {
       };
     });
   }, []);
+
+  // ── Merge selected needs ──────────────────────────────────────────
+
+  const openMergeModal = useCallback(() => {
+    if (selectedNeeds.length < 2) return;
+    setMergePickedId(selectedNeeds[0].id);
+    setMergeText(selectedNeeds[0].text);
+    setShowMergeModal(true);
+  }, [selectedNeeds]);
+
+  const executeMerge = useCallback(() => {
+    if (!result || selectedIds.size < 2) return;
+    const finalText = mergeText.trim();
+    if (!finalText) return;
+
+    // Combine experts (deduplicated) and sum frequency
+    const allExperts = [...new Set(selectedNeeds.flatMap(n => n.experts))];
+    const totalFrequency = allExperts.length;
+
+    const mergedNeed: ParsedNeed = {
+      id: `merged-${Date.now()}`,
+      text: finalText,
+      frequency: totalFrequency,
+      experts: allExperts,
+    };
+
+    // Find which container the first selected need is in — merged card goes there
+    let targetContainer = 'unassigned';
+    for (const g of result.groups) {
+      if (g.needs.some(n => selectedIds.has(n.id))) {
+        targetContainer = g.id;
+        break;
+      }
+    }
+
+    setResult(prev => {
+      if (!prev) return prev;
+      // Remove all selected needs from everywhere
+      let newGroups = prev.groups.map(g => ({
+        ...g,
+        needs: g.needs.filter(n => !selectedIds.has(n.id)),
+      }));
+      let newUnassigned = prev.unassigned.filter(n => !selectedIds.has(n.id));
+
+      // Add merged need to target
+      if (targetContainer === 'unassigned') {
+        newUnassigned = [mergedNeed, ...newUnassigned];
+      } else {
+        newGroups = newGroups.map(g =>
+          g.id === targetContainer ? { ...g, needs: [mergedNeed, ...g.needs] } : g
+        );
+      }
+
+      // Remove empty groups
+      newGroups = newGroups.filter(g => g.needs.length > 0);
+
+      return { groups: newGroups, unassigned: newUnassigned };
+    });
+
+    setSelectedIds(new Set());
+    setShowMergeModal(false);
+    setMergeText('');
+    setMergePickedId(null);
+  }, [result, selectedIds, selectedNeeds, mergeText]);
+
+  // ── Add new category ──────────────────────────────────────────────
+
+  const addNewCategory = useCallback(() => {
+    const name = newCategoryName.trim();
+    if (!name || !result) return;
+    const newGroup: PreprocessedGroup = {
+      id: `group-custom-${Date.now()}`,
+      name,
+      needs: [],
+    };
+    setResult(prev => prev ? { ...prev, groups: [...prev.groups, newGroup] } : prev);
+    setNewCategoryName('');
+    setShowNewCategory(false);
+  }, [newCategoryName, result]);
 
   // ── DnD ────────────────────────────────────────────────────────────
 
@@ -415,6 +635,17 @@ export default function App() {
       unassigned: result.unassigned.map(n => ({ text: n.text, frequency: n.frequency, experts: n.experts })),
     };
 
+    // Save to Firestore
+    if (sessionId) {
+      try {
+        await savePreprocessed(sessionId, exportData);
+        await updateSessionStatus(sessionId, 'l2');
+      } catch (e) { console.error('Firestore T2 save error', e); }
+    }
+
+    // Save to localStorage for Expert L2 to read (fallback)
+    localStorage.setItem('magnetix_preprocessed', JSON.stringify(exportData));
+
     // Download as JSON
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -423,20 +654,7 @@ export default function App() {
     a.download = `preprocessed-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-
-    // Also try to save to Google Sheets (fire-and-forget)
-    if (!isMock) {
-      try {
-        const scriptUrl = import.meta.env.VITE_APPS_SCRIPT_URL;
-        fetch(scriptUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'savePreprocessed', data: exportData }),
-        });
-      } catch { /* ignore */ }
-    }
-  }, [result, userName, isMock]);
+  }, [result, userName, sessionId]);
 
   // ── Toggle collapse ────────────────────────────────────────────────
 
@@ -479,7 +697,17 @@ export default function App() {
           </div>
 
           <form
-            onSubmit={e => { e.preventDefault(); if (userName.trim()) setStep('process'); }}
+            onSubmit={async e => {
+              e.preventDefault();
+              if (!userName.trim()) return;
+              // Create session if in create mode
+              if (createMode && sessionName.trim()) {
+                const id = `session_${Date.now()}`;
+                await createSession({ id, name: sessionName.trim(), createdBy: userName.trim(), status: 'l1' });
+                setSessionId(id);
+              }
+              setStep('process');
+            }}
             className="space-y-4"
           >
             <div>
@@ -492,9 +720,54 @@ export default function App() {
                 autoFocus
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Oturum</label>
+              {sessionsLoading ? (
+                <p className="text-xs text-gray-400 py-2">Yükleniyor...</p>
+              ) : createMode ? (
+                <div className="space-y-2">
+                  <input
+                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                    placeholder="Yeni oturum adı (ör: Deprem Eğitim 2026)"
+                    value={sessionName}
+                    onChange={e => setSessionName(e.target.value)}
+                  />
+                  {sessions.length > 0 && (
+                    <button type="button" onClick={() => setCreateMode(false)} className="text-xs text-blue-600 hover:underline">
+                      Mevcut oturum sec
+                    </button>
+                  )}
+                </div>
+              ) : sessions.length > 0 ? (
+                <div className="space-y-2">
+                  <select
+                    value={sessionId}
+                    onChange={e => setSessionId(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  >
+                    {sessions.map(s => (
+                      <option key={s.id} value={s.id}>{s.name} ({s.status})</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={() => setCreateMode(true)} className="text-xs text-blue-600 hover:underline">
+                    + Yeni oturum olustur
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <input
+                    className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                    placeholder="Oturum adı (ör: Deprem Eğitim 2026)"
+                    value={sessionName}
+                    onChange={e => setSessionName(e.target.value)}
+                  />
+                  <p className="text-xs text-gray-400">Ilk oturumu siz olusturuyorsunuz.</p>
+                </div>
+              )}
+            </div>
             <button
               type="submit"
-              disabled={!userName.trim()}
+              disabled={!userName.trim() || (createMode && !sessionName.trim()) || (!createMode && sessions.length === 0 && !sessionName.trim())}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow hover:from-blue-700 hover:to-indigo-700 disabled:opacity-40 transition"
             >
               <LogIn size={16} /> Giris Yap
@@ -518,7 +791,7 @@ export default function App() {
           <Cpu size={48} className="mx-auto text-indigo-500 mb-4" />
           <h2 className="text-xl font-bold text-gray-900 mb-2">L1 Notlarini Isle</h2>
           <p className="text-sm text-gray-500 mb-6">
-            12 uzmanin L1 notlari parse edilecek, tekrarlar birlestirilecek ve kural tabanli kategorize yapilacak.
+            Veri kaynagi secin, parse + dedup + kural tabanli kategorize yapilacak.
           </p>
 
           {loading ? (
@@ -527,12 +800,69 @@ export default function App() {
               <span className="text-sm text-gray-500">Isleniyor...</span>
             </div>
           ) : (
-            <button
-              onClick={handleProcess}
-              className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow hover:from-blue-700 hover:to-indigo-700 transition"
-            >
-              <Sparkles size={16} /> Islemeyi Baslat
-            </button>
+            <div className="space-y-3">
+              {/* JSON file import */}
+              <div>
+                <input type="file" accept=".json" onChange={handleL1FileImport} className="hidden" id="l1-file-input" />
+                <label
+                  htmlFor="l1-file-input"
+                  className={cn(
+                    'flex items-center justify-center gap-2 w-full rounded-lg border-2 border-dashed px-4 py-3 text-sm font-medium cursor-pointer transition',
+                    importedL1Notes
+                      ? 'border-green-400 bg-green-50 text-green-700'
+                      : 'border-gray-300 bg-gray-50 text-gray-600 hover:border-blue-400 hover:text-blue-600',
+                  )}
+                >
+                  <Save size={16} />
+                  {importedL1Notes
+                    ? `${importedL1Notes.length} not yuklendi (JSON)`
+                    : 'L1 Notlari JSON Yukle'}
+                </label>
+              </div>
+
+              {/* Source buttons */}
+              <div className="grid grid-cols-1 gap-2">
+                {sessionId && (
+                  <button
+                    onClick={() => handleProcess('firestore')}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow hover:from-blue-700 hover:to-indigo-700 transition"
+                  >
+                    <Sparkles size={16} /> Firestore'dan Isle (oturum: {sessions.find(s => s.id === sessionId)?.name || sessionId})
+                  </button>
+                )}
+
+                {importedL1Notes && (
+                  <button
+                    onClick={() => handleProcess('file')}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow hover:from-green-700 hover:to-emerald-700 transition"
+                  >
+                    <Sparkles size={16} /> Yuklenen JSON ile Isle ({importedL1Notes.length} not)
+                  </button>
+                )}
+
+                {localL1Notes.length > 0 && (
+                  <button
+                    onClick={() => handleProcess('localStorage')}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-100 transition"
+                  >
+                    <Save size={16} /> localStorage'dan Isle ({localL1Notes.length} not)
+                  </button>
+                )}
+
+                <button
+                  onClick={() => handleProcess('mock')}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-6 py-3 text-sm font-medium text-gray-600 hover:bg-gray-100 transition"
+                >
+                  <Cpu size={16} /> Mock Veri ile Isle (12 uzman)
+                </button>
+              </div>
+
+              {!geminiKey && (
+                <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-2">
+                  Gemini API key bulunamadi — LLM kategorize devre disi, sadece kural tabanli kategorize yapilacak.
+                </p>
+              )}
+            </div>
           )}
         </motion.div>
       </div>
@@ -565,6 +895,26 @@ export default function App() {
               </div>
             )}
 
+            {selectedIds.size >= 2 && (
+              <button
+                onClick={openMergeModal}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-100 transition"
+              >
+                <Merge size={12} />
+                Birlestir ({selectedIds.size})
+              </button>
+            )}
+
+            {selectedIds.size > 0 && (
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 transition"
+              >
+                <X size={12} />
+                Secimi Temizle
+              </button>
+            )}
+
             {geminiKey && (
               <button
                 onClick={handleLLMCategorize}
@@ -578,6 +928,10 @@ export default function App() {
                 )}
                 LLM ile Yeniden Kategorize
               </button>
+            )}
+
+            {llmError && (
+              <span className="text-xs text-red-600 bg-red-50 rounded px-2 py-1">{llmError}</span>
             )}
 
             <button
@@ -596,7 +950,30 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
             {/* Main: Groups */}
             <div className="space-y-4">
-              <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Kategoriler</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Kategoriler</h2>
+                {showNewCategory ? (
+                  <div className="flex items-center gap-1">
+                    <input
+                      className="rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      placeholder="Kategori adi..."
+                      value={newCategoryName}
+                      onChange={e => setNewCategoryName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') addNewCategory(); if (e.key === 'Escape') setShowNewCategory(false); }}
+                      autoFocus
+                    />
+                    <button onClick={addNewCategory} className="p-1 text-green-600 hover:text-green-800"><Check size={16} /></button>
+                    <button onClick={() => setShowNewCategory(false)} className="p-1 text-gray-400 hover:text-gray-600"><X size={16} /></button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowNewCategory(true)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-dashed border-gray-300 px-3 py-1 text-xs font-medium text-gray-500 hover:border-blue-400 hover:text-blue-600 transition"
+                  >
+                    <FolderPlus size={14} /> Yeni Kategori
+                  </button>
+                )}
+              </div>
               {result?.groups.map((group, idx) => (
                 <GroupPanel
                   key={group.id}
@@ -608,6 +985,8 @@ export default function App() {
                   onDeleteGroup={deleteGroup}
                   collapsed={collapsedGroups.has(group.id)}
                   onToggle={() => toggleCollapse(group.id)}
+                  selectedIds={selectedIds}
+                  onSelectNeed={toggleSelect}
                 />
               ))}
             </div>
@@ -633,6 +1012,8 @@ export default function App() {
                             need={need}
                             onEdit={editNeed}
                             onDelete={deleteNeed}
+                            selected={selectedIds.has(need.id)}
+                            onSelect={toggleSelect}
                           />
                         ))}
                       </AnimatePresence>
@@ -659,6 +1040,85 @@ export default function App() {
           )}
         </DragOverlay>
       </DndContext>
+
+      {/* Merge Modal */}
+      <AnimatePresence>
+        {showMergeModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+            onClick={() => setShowMergeModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl mx-4"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <Merge size={20} className="text-purple-600" />
+                <h3 className="text-lg font-bold text-gray-900">Ihtiyaclari Birlestir</h3>
+              </div>
+
+              <p className="text-sm text-gray-500 mb-3">{selectedNeeds.length} ihtiyac secildi. Birini secin veya yeni metin yazin:</p>
+
+              <div className="space-y-2 max-h-48 overflow-y-auto mb-4">
+                {selectedNeeds.map(need => (
+                  <label
+                    key={need.id}
+                    className={cn(
+                      'flex items-start gap-2 rounded-lg border p-2.5 text-sm cursor-pointer transition',
+                      mergePickedId === need.id ? 'border-purple-400 bg-purple-50 ring-1 ring-purple-300' : 'border-gray-200 hover:border-gray-300',
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="mergePick"
+                      checked={mergePickedId === need.id}
+                      onChange={() => { setMergePickedId(need.id); setMergeText(need.text); }}
+                      className="mt-0.5 accent-purple-600"
+                    />
+                    <div>
+                      <span>{need.text}</span>
+                      <div className="text-xs text-gray-400 mt-0.5">{need.frequency} uzman</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Sonuc metni (duzenleyebilirsiniz):</label>
+                <textarea
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent"
+                  rows={3}
+                  value={mergeText}
+                  onChange={e => { setMergeText(e.target.value); setMergePickedId(null); }}
+                />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowMergeModal(false)}
+                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 transition"
+                >
+                  Iptal
+                </button>
+                <button
+                  onClick={executeMerge}
+                  disabled={!mergeText.trim()}
+                  className="rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:from-purple-700 hover:to-indigo-700 disabled:opacity-40 transition"
+                >
+                  <Merge size={14} className="inline mr-1" />
+                  Birlestir
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
