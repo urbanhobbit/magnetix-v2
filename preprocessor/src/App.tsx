@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   DndContext,
   DragOverlay,
-  closestCenter,
+  closestCorners,
   PointerSensor,
   useSensor,
   useSensors,
@@ -11,6 +11,7 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import {
   LogIn,
@@ -179,9 +180,10 @@ function GroupPanel({
   const color = GROUP_COLORS[colorIdx % GROUP_COLORS.length];
   const [renaming, setRenaming] = useState(false);
   const [nameText, setNameText] = useState(group.name);
+  const { setNodeRef, isOver } = useDroppable({ id: group.id });
 
   return (
-    <motion.div layout className={cn('rounded-xl border overflow-hidden', color.border, color.bg)}>
+    <motion.div layout ref={setNodeRef} className={cn('rounded-xl border overflow-hidden transition-colors', color.border, color.bg, isOver && 'ring-2 ring-blue-400 ring-offset-1')}>
       <div className={cn('flex items-center gap-2 px-3 py-2', color.header)}>
         <button onClick={onToggle} className="shrink-0">
           {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
@@ -218,8 +220,10 @@ function GroupPanel({
             className="px-2 pb-2"
           >
             <SortableContext items={group.needs.map(n => n.id)} strategy={verticalListSortingStrategy}>
-              <div className="space-y-1.5 mt-2">
-                {group.needs.map(need => (
+              <div className={cn('space-y-1.5 mt-2 min-h-[40px] rounded-lg transition-colors', group.needs.length === 0 && 'border-2 border-dashed border-gray-300 flex items-center justify-center', isOver && group.needs.length === 0 && 'border-blue-400 bg-blue-50')}>
+                {group.needs.length === 0 ? (
+                  <span className="text-xs text-gray-400">Buraya kart surukleyin</span>
+                ) : group.needs.map(need => (
                   <SortableNeedCard
                     key={need.id}
                     need={need}
@@ -512,9 +516,6 @@ export default function App() {
         );
       }
 
-      // Remove empty groups
-      newGroups = newGroups.filter(g => g.needs.length > 0);
-
       return { groups: newGroups, unassigned: newUnassigned };
     });
 
@@ -614,9 +615,6 @@ export default function App() {
           return g;
         });
       }
-
-      // Remove empty groups
-      newGroups = newGroups.filter(g => g.needs.length > 0);
 
       return { groups: newGroups, unassigned: newUnassigned };
     });
@@ -972,7 +970,7 @@ export default function App() {
       </header>
 
       {/* Board */}
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <div className="mx-auto max-w-7xl px-4 py-6">
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
             {/* Main: Groups */}
