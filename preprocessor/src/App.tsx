@@ -857,7 +857,7 @@ export default function App() {
                   onClick={() => handleProcess('mock')}
                   className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-6 py-3 text-sm font-medium text-gray-600 hover:bg-gray-100 transition"
                 >
-                  <Cpu size={16} /> Mock Veri ile Isle (12 uzman)
+                  <Cpu size={16} /> Mock Veri ile Isle (5 uzman)
                 </button>
               </div>
 
