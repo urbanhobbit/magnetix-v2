@@ -29,6 +29,7 @@ import {
   Download,
   Merge,
   FolderPlus,
+  Upload,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { MOCK_L1_NOTES } from '@shared/mockData';
@@ -43,6 +44,7 @@ import {
 } from '@shared/categorize';
 import {
   getL1Notes,
+  saveL1Note,
   savePreprocessed,
   listSessions,
   createSession,
@@ -827,12 +829,33 @@ export default function App() {
               {/* Source buttons */}
               <div className="grid grid-cols-1 gap-2">
                 {sessionId && (
-                  <button
-                    onClick={() => handleProcess('firestore')}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow hover:from-blue-700 hover:to-indigo-700 transition"
-                  >
-                    <Sparkles size={16} /> Firestore'dan Isle (oturum: {sessions.find(s => s.id === sessionId)?.name || sessionId})
-                  </button>
+                  <>
+                    <button
+                      onClick={() => handleProcess('firestore')}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow hover:from-blue-700 hover:to-indigo-700 transition"
+                    >
+                      <Sparkles size={16} /> Firestore'dan Isle (oturum: {sessions.find(s => s.id === sessionId)?.name || sessionId})
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          setLoading(true);
+                          for (const note of MOCK_L1_NOTES) {
+                            await saveL1Note(sessionId, note.expertName, note.text);
+                          }
+                          alert(`${MOCK_L1_NOTES.length} mock L1 notu Firestore'a yazildi! Simdi "Firestore'dan Isle" butonunu kullanabilirsiniz.`);
+                        } catch (e) {
+                          console.error('Firestore seed error', e);
+                          alert('Firestore\'a yazilamadi. Guvenlik kurallarini kontrol edin.');
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-6 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-100 transition"
+                    >
+                      <Upload size={16} /> Mock Veriyi Firestore'a Yaz (5 uzman, {MOCK_L1_NOTES.length} not)
+                    </button>
+                  </>
                 )}
 
                 {importedL1Notes && (
