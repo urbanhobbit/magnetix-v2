@@ -29,6 +29,8 @@ import type { Need, Group, ExpertResult } from '@shared/types';
 import { computeConsensus } from '@shared/types';
 import { MOCK_L2_RESULTS } from '@shared/mockData';
 import { getL2Results, listSessions, type Session } from '@shared/firestoreService';
+import { doc, setDoc } from 'firebase/firestore';
+import { db } from '@shared/firebase';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -453,16 +455,34 @@ export default function App() {
   // ─── Save ──────────────────────────────────────────────────────────────────
 
   const handleSave = async () => {
+    const payload = {
+      sessionId,
+      moderator: moderatorName,
+      needs,
+      groups,
+      savedAt: new Date().toISOString(),
+    };
+
+    // Save to localStorage
     try {
-      await fetch(API_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveL3', moderator: moderatorName, needs, groups }),
-      });
-    } catch {
-      // silent
+      localStorage.setItem(`magnetix_l3_${sessionId || 'default'}`, JSON.stringify(payload));
+    } catch { /* silent */ }
+
+    // Save to Firestore
+    if (sessionId) {
+      try {
+        await setDoc(doc(db, 'l3_consensus', sessionId), payload);
+      } catch (e) { console.warn('Firestore L3 save failed:', e); }
     }
+
+    // Download JSON
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `l3_consensus_${sessionId || 'result'}_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // ─── Active drag need ─────────────────────────────────────────────────────
